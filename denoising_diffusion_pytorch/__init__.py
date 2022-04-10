@@ -1,1 +1,2 @@
 from denoising_diffusion_pytorch.denoising_diffusion_pytorch import GaussianDiffusion, Unet, Trainer
+from denoising_diffusion_pytorch.denoising_diffusion_pytorch import loss_backwards, num_to_groups

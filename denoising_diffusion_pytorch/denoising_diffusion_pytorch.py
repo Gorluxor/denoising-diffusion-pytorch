@@ -17,7 +17,8 @@ from tqdm import tqdm
 from einops import rearrange
 
 try:
-    from apex import amp
+    from torch.cuda.amp import GradScaler, autocast
+    #from apex import amp
     APEX_AVAILABLE = True
 except:
     APEX_AVAILABLE = False
@@ -47,8 +48,10 @@ def num_to_groups(num, divisor):
 
 def loss_backwards(fp16, loss, optimizer, **kwargs):
     if fp16:
-        with amp.scale_loss(loss, optimizer) as scaled_loss:
-            scaled_loss.backward(**kwargs)
+        #scaler.scale(loss).backward()
+        kwargs['scaler'].scale(loss).backward()
+        #with amp.scale_loss(loss, optimizer) as scaled_loss:
+        #    scaled_loss.backward(**kwargs)
     else:
         loss.backward(**kwargs)
 
@@ -480,7 +483,7 @@ class Dataset(data.Dataset):
             transforms.RandomHorizontalFlip(),
             transforms.CenterCrop(image_size),
             transforms.ToTensor(),
-            transforms.Lambda(lambda t: (t * 2) - 1)
+            #transforms.Lambda(lambda t: (t * 2) - 1)
         ])
 
     def __len__(self):
@@ -526,16 +529,21 @@ class Trainer(object):
         self.train_num_steps = train_num_steps
 
         self.ds = Dataset(folder, image_size)
-        self.dl = cycle(data.DataLoader(self.ds, batch_size = train_batch_size, shuffle=True, pin_memory=True))
+        print(len(self.ds))
+        self.dl = cycle(data.DataLoader(self.ds, batch_size = train_batch_size, shuffle=True, num_workers = 16, pin_memory=True))
         self.opt = Adam(diffusion_model.parameters(), lr=train_lr)
 
+        # print(len(self.ds))
+        # print(len(self.dl))
+        
         self.step = 0
 
         assert not fp16 or fp16 and APEX_AVAILABLE, 'Apex must be installed in order for mixed precision training to be turned on'
 
         self.fp16 = fp16
-        if fp16:
-            (self.model, self.ema_model), self.opt = amp.initialize([self.model, self.ema_model], self.opt, opt_level='O1')
+        self.scaler = GradScaler()
+        # if fp16:
+        #     (self.model, self.ema_model), self.opt = amp.initialize([self.model, self.ema_model], self.opt, opt_level='O1')
 
         self.results_folder = Path(results_folder)
         self.results_folder.mkdir(exist_ok = True)
@@ -567,12 +575,16 @@ class Trainer(object):
         self.ema_model.load_state_dict(data['ema'])
 
     def train(self):
-        backwards = partial(loss_backwards, self.fp16)
-
+        backwards = partial(loss_backwards, self.fp16, scaler=self.scaler)
+        
         while self.step < self.train_num_steps:
+            
             for i in range(self.gradient_accumulate_every):
-                data = next(self.dl).cuda()
-                loss = self.model(data)
+                with autocast():
+                    #for data in self.dl:
+                    data = next(self.dl).cuda() #next(self.dl).cuda()
+                    data = (data * 2) - 1
+                    loss = self.model(data)
                 print(f'{self.step}: {loss.item()}')
                 backwards(loss / self.gradient_accumulate_every, self.opt)
 
